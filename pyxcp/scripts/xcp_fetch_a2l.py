@@ -36,5 +36,6 @@ def main():
         print(f"A2L data written to {file_name!r}.")
 
 
+
 if __name__ == "__main__":
     main()

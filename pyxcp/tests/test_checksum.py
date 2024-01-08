@@ -3,6 +3,8 @@ import pytest
 from pyxcp import checksum
 
 
+from pyxcp import checksum
+
 """
 XCP_ADD_11          0x10        0x10
 XCP_ADD_12          0x0F10      0x0F10

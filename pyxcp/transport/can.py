@@ -315,15 +315,30 @@ class Can(BaseTransport):
         self.useDefaultListener = self.config.use_default_listener
         self.can_id_master = Identifier(self.config.can_id_master)
         self.can_id_slave = Identifier(self.config.can_id_slave)
+        self.daq_list_can_ids = []
+        self.daq_identifier = []
 
+        # New-style list-based DAQ config (preferred)
+        if hasattr(self.config, "daq_identifier") and self.config.daq_identifier:
+            for daq_id in self.config.daq_identifier:
+                self.daq_identifier.append(Identifier(daq_id))
+
+        # Fallback to old-style CAN_ID_DAQ0, CAN_ID_DAQ1, ...
+        else:
+            n = 0
+            while True:
+                daq_key = f"CAN_ID_DAQ{n}"
+                daq_id = getattr(self.config, daq_key, None)
+                if daq_id is None:
+                    break
+                self.daq_identifier.append(Identifier(daq_id))
+                n += 1
+
+        #
         # Regarding CAN-FD s. AUTOSAR CP Release 4.3.0, Requirements on CAN; [SRS_Can_01160] Padding of bytes due to discrete CAN FD DLC]:
         #   "... If a PDU does not exactly match these configurable sizes the unused bytes shall be padded."
         #
         self.fd = self.config.fd
-        self.daq_identifier = []
-        if self.config.daq_identifier:
-            for daq_id in self.config.daq_identifier:
-                self.daq_identifier.append(Identifier(daq_id))
         self.max_dlc_required = self.config.max_dlc_required
         self.padding_value = self.config.padding_value
         self.interface_name = self.config.interface
