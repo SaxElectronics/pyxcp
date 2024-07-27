@@ -41,8 +41,7 @@ class FrameAcquisitionPolicy:
     def filtered_out(self) -> typing.Set[types.FrameCategory]:
         return self._frame_types_to_filter_out
 
-    def feed(self, frame_type: types.FrameCategory, counter: int, timestamp: float, payload: bytes) -> None:
-        ...
+    def feed(self, frame_type: types.FrameCategory, counter: int, timestamp: float, payload: bytes) -> None: ...
 
     def finalize(self) -> None:
         """
@@ -54,6 +53,63 @@ class NoOpPolicy(FrameAcquisitionPolicy):
     """
     No operation / do nothing policy.
     """
+
+
+from collections import defaultdict, deque
+
+
+class DaqDataHandler:
+    def __init__(self):
+        self.odt_entry_locks = {}
+        self.odt_entry_counters = {}
+        self.sorted_data = defaultdict(lambda: defaultdict(list))
+        self.data_ready_flags = {}
+        self.received_samples = defaultdict(int)
+        self.data_flags = defaultdict(bool)
+
+    def _process_daq_data(self, payload):
+        odt_entry_number = payload[0]  # First byte is the ODT entry number
+        daq_list_number = payload[1]  # Second byte is the DAQ list number
+
+        # Initialize locks, counters, and data structures for the DAQ list if they don't exist
+        if daq_list_number not in self.odt_entry_locks:
+            self.odt_entry_locks[daq_list_number] = threading.Lock()
+            self.odt_entry_counters[daq_list_number] = 0
+            self.data_ready_flags[daq_list_number] = threading.Event()
+
+        with self.odt_entry_locks[daq_list_number]:
+            # Append the payload to the appropriate location in the sorted data structure
+            self.sorted_data[daq_list_number][odt_entry_number].append(payload)
+
+            # Check for wraparound and increment the sample counter if necessary
+            if odt_entry_number < self.odt_entry_counters[daq_list_number]:
+                self.received_samples[daq_list_number] += 1
+                self.data_ready_flags[daq_list_number].set()
+                print(f"Data ready flag set for DAQ list {daq_list_number}")
+
+            # Update the ODT entry counter for the DAQ list
+            self.odt_entry_counters[daq_list_number] = odt_entry_number
+
+    def process_daq_data_for_list(self, daq_list_number):
+        while True:
+            # Wait for the data ready flag to be set
+            self.data_ready_flags[daq_list_number].wait()
+
+            with self.odt_entry_locks[daq_list_number]:
+                while self.received_samples[daq_list_number] > 0:
+                    sample_point_data = {}
+                    for odt_entry_number in self.sorted_data[daq_list_number]:
+                        if self.sorted_data[daq_list_number][odt_entry_number]:
+                            sample_point_data[odt_entry_number] = self.sorted_data[daq_list_number][odt_entry_number].pop(0)
+
+                    print(f"Processing DAQ list {daq_list_number}, Sample point data: {sample_point_data}")
+
+                    # Decrement the counter for the ready samples
+                    self.received_samples[daq_list_number] -= 1
+
+                # Clear the data ready flag if there are no more ready samples
+                if self.received_samples[daq_list_number] == 0:
+                    self.data_ready_flags[daq_list_number].clear()
 
 
 class LegacyFrameAcquisitionPolicy(FrameAcquisitionPolicy):
@@ -189,7 +245,7 @@ class BaseTransport(metaclass=abc.ABCMeta):
             args=(),
             kwargs={},
         )
-
+        self.daq_data_handler = DaqDataHandler()  # DAQ data handler instance
         self.first_daq_timestamp = None
 
         self.timestamp_origin = time()
@@ -391,6 +447,8 @@ class BaseTransport(metaclass=abc.ABCMeta):
             else:
                 timestamp = 0.0
             self.policy.feed(types.FrameCategory.DAQ, self.counterReceived, timestamp, response)
+            self.daqQueue.append((response, self.counterReceived, length, timestamp))
+            self.daq_data_handler._process_daq_data(response)
 
 
 def createTransport(name, *args, **kws):
