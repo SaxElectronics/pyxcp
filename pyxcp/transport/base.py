@@ -58,58 +58,78 @@ class NoOpPolicy(FrameAcquisitionPolicy):
 from collections import defaultdict, deque
 
 
+
+
+
 class DaqDataHandler:
     def __init__(self):
-        self.odt_entry_locks = {}
-        self.odt_entry_counters = {}
-        self.sorted_data = defaultdict(lambda: defaultdict(list))
+        self.daq_data_locks = {}
+        self.odt_entry_counters = defaultdict(int)
+        self.sorted_daq_data = defaultdict(deque)
+        self.complete_samples = defaultdict(deque)
         self.data_ready_flags = {}
         self.received_samples = defaultdict(int)
         self.data_flags = defaultdict(bool)
+        self.accumulating_entries = defaultdict(list)  # Temporarily stores current sample data
 
-    def _process_daq_data(self, payload):
+    def _process_daq_data_simple(self, payload):
+        """
+        Processes and sorts incoming DAQ (Data Acquisition) data payloads.
+
+        Args:
+            payload (bytes): The incoming DAQ data payload. The first byte represents the ODT entry number and the 
+                            second byte represents the DAQ list number.
+        """
         odt_entry_number = payload[0]  # First byte is the ODT entry number
         daq_list_number = payload[1]  # Second byte is the DAQ list number
 
-        # Initialize locks, counters, and data structures for the DAQ list if they don't exist
-        if daq_list_number not in self.odt_entry_locks:
-            self.odt_entry_locks[daq_list_number] = threading.Lock()
-            self.odt_entry_counters[daq_list_number] = 0
-            self.data_ready_flags[daq_list_number] = threading.Event()
+        # Append the payload data (excluding the first two bytes) to the main deque
+        data_to_append = payload[2:]
+        self.sorted_daq_data[daq_list_number].append((odt_entry_number, data_to_append))
 
-        with self.odt_entry_locks[daq_list_number]:
-            # Append the payload to the appropriate location in the sorted data structure
-            self.sorted_data[daq_list_number][odt_entry_number].append(payload)
+        # Debug: Log the appended data
+        print(f"Appended data to DAQ list {daq_list_number}, ODT entry {odt_entry_number}: {data_to_append}")
 
-            # Check for wraparound and increment the sample counter if necessary
-            if odt_entry_number < self.odt_entry_counters[daq_list_number]:
-                self.received_samples[daq_list_number] += 1
-                self.data_ready_flags[daq_list_number].set()
-                print(f"Data ready flag set for DAQ list {daq_list_number}")
+        # # Check for wraparound
+        if odt_entry_number < self.odt_entry_counters[daq_list_number]:
+        #     # Wraparound detected, append the accumulated sample to the complete samples deque
+            self.complete_samples[daq_list_number].append(self.accumulating_entries[daq_list_number])
+        #     print(f"Appended complete sample to DAQ list {daq_list_number}")
+        #     # Reset the accumulating entries for the next sample
+            self.accumulating_entries[daq_list_number] = []
+        
+        self.accumulating_entries[daq_list_number].append((odt_entry_number, data_to_append))
 
-            # Update the ODT entry counter for the DAQ list
-            self.odt_entry_counters[daq_list_number] = odt_entry_number
+        # Update the ODT entry counter for the DAQ list
+        self.odt_entry_counters[daq_list_number] = odt_entry_number
 
-    def process_daq_data_for_list(self, daq_list_number):
-        while True:
-            # Wait for the data ready flag to be set
-            self.data_ready_flags[daq_list_number].wait()
+    def pop_odtdata_for_daqlist_stored_by_entry(self, daq_list_number):
+        """
+        Pops the complete sample point data for a specific DAQ list number.
 
-            with self.odt_entry_locks[daq_list_number]:
-                while self.received_samples[daq_list_number] > 0:
-                    sample_point_data = {}
-                    for odt_entry_number in self.sorted_data[daq_list_number]:
-                        if self.sorted_data[daq_list_number][odt_entry_number]:
-                            sample_point_data[odt_entry_number] = self.sorted_data[daq_list_number][odt_entry_number].pop(0)
+        Args:
+            daq_list_number (int): The DAQ list number to process.
 
-                    print(f"Processing DAQ list {daq_list_number}, Sample point data: {sample_point_data}")
+        Returns:
+            list: A list of tuples containing the ODT entry number and the data for the sample point.
+        """
+        if daq_list_number in self.sorted_daq_data and self.sorted_daq_data[daq_list_number]:
+            return self.sorted_daq_data[daq_list_number].popleft()
+        return None
 
-                    # Decrement the counter for the ready samples
-                    self.received_samples[daq_list_number] -= 1
+    def pop_received_daq_data_stored_by_sample_point(self, daq_list_number):
+        """
+        Pops the complete sample point data for a specific DAQ list number.
 
-                # Clear the data ready flag if there are no more ready samples
-                if self.received_samples[daq_list_number] == 0:
-                    self.data_ready_flags[daq_list_number].clear()
+        Args:
+            daq_list_number (int): The DAQ list number to process.
+
+        Returns:
+            list: A list of tuples containing the ODT entry number and the data for the sample point.
+        """
+        if daq_list_number in self.complete_samples and self.complete_samples[daq_list_number]:
+            return self.complete_samples[daq_list_number].popleft()
+        return None
 
 
 class LegacyFrameAcquisitionPolicy(FrameAcquisitionPolicy):
