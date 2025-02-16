@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """Lowlevel API reflecting available XCP services.
 
 .. note:: For technical reasons the API is split into two parts;
@@ -12,33 +11,23 @@ import logging
 import struct
 import traceback
 import warnings
-from time import sleep
-from typing import Callable
-from typing import Collection
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Union
+from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
-from pyxcp import checksum
-from pyxcp import types
-from pyxcp.config import Configuration
-from pyxcp.constants import makeBytePacker
-from pyxcp.constants import makeByteUnpacker
-from pyxcp.constants import makeDLongPacker
-from pyxcp.constants import makeDLongUnpacker
-from pyxcp.constants import makeDWordPacker
-from pyxcp.constants import makeDWordUnpacker
-from pyxcp.constants import makeWordPacker
-from pyxcp.constants import makeWordUnpacker
-from pyxcp.constants import PackerType
-from pyxcp.constants import UnpackerType
-from pyxcp.master.errorhandler import disable_error_handling
-from pyxcp.master.errorhandler import wrapped
-from pyxcp.transport.base import createTransport
-from pyxcp.utils import decode_bytes
-from pyxcp.utils import delay
-from pyxcp.utils import SHORT_SLEEP
+from pyxcp import checksum, types
+from pyxcp.constants import (
+    makeBytePacker,
+    makeByteUnpacker,
+    makeDLongPacker,
+    makeDLongUnpacker,
+    makeDWordPacker,
+    makeDWordUnpacker,
+    makeWordPacker,
+    makeWordUnpacker,
+)
+from pyxcp.daq_stim.stim import DaqEventInfo, Stim
+from pyxcp.master.errorhandler import SystemExit, disable_error_handling, wrapped
+from pyxcp.transport.base import create_transport
+from pyxcp.utils import decode_bytes, delay, short_sleep
 
 
 def broadcasted(func: Callable):
@@ -50,7 +39,7 @@ class SlaveProperties(dict):
     """Container class for fixed parameters, like byte-order, maxCTO, ..."""
 
     def __init__(self, *args, **kws):
-        super(SlaveProperties, self).__init__(*args, **kws)
+        super().__init__(*args, **kws)
 
     def __getattr__(self, name):
         return self[name]
@@ -70,38 +59,33 @@ class Master:
 
     Parameters
     ----------
-    transportName : str
+    transport_name : str
         XCP transport layer name ['can', 'eth', 'sxi']
     config: dict
     """
 
-    PARAMETER_MAP = {
-        #            Type Req'd  Default
-        "LOGLEVEL": (str, False, "WARN"),
-        "DISABLE_ERROR_HANDLING": (
-            bool,
-            False,
-            False,
-        ),  # Bypass error-handling for performance reasons.
-        "SEED_N_KEY_DLL": (str, False, ""),
-        "SEED_N_KEY_DLL_SAME_BIT_WIDTH": (bool, False, False),
-        "DISCONNECT_RESPONSE_OPTIONAL": (bool, False, False),
-    }
-
-    def __init__(self, transportName, config=None, policy=None):
+    def __init__(self, transport_name: Optional[str], config, policy=None, transport_layer_interface=None):
+        if transport_name is None:
+            raise ValueError("No transport-layer selected")  # Never reached -- to keep type-checkers happy.
         self.ctr = 0
         self.succeeded = True
-        self.config = Configuration(self.PARAMETER_MAP or {}, config or {})
-        self.logger = logging.getLogger("pyXCP")
-        self.logger.setLevel(self.config.get("LOGLEVEL"))
-        disable_error_handling(self.config.get("DISABLE_ERROR_HANDLING"))
-
-        self.transport = createTransport(transportName, config, policy)
-        self.transport_name = transportName
+        self.config = config.general
+        self.logger = logging.getLogger("PyXCP")
+        disable_error_handling(self.config.disable_error_handling)
+        self.transport_name = transport_name.lower()
+        transport_config = config.transport
+        self.transport = create_transport(transport_name, transport_config, policy, transport_layer_interface)
+        self.stim = Stim(self.config.stim_support)
+        self.stim.clear()
+        self.stim.set_policy_feeder(self.transport.policy.feed)
+        self.stim.set_frame_sender(self.transport.block_request)
 
         # In some cases the transport-layer needs to communicate with us.
         self.transport.parent = self
         self.service = None
+
+        # Policies may issue XCP commands on there own.
+        self.transport.policy.xcp_master = self
 
         # (D)Word (un-)packers are byte-order dependent
         # -- byte-order is returned by CONNECT_Resp (COMM_MODE_BASIC)
@@ -119,11 +103,13 @@ class Master:
         self.mta = types.MtaType(None, None)
         self.currentDaqPtr = None
         self.currentProtectionStatus = None
-        self.seedNKeyDLL = self.config.get("SEED_N_KEY_DLL")
-        self.seedNKeyDLL_same_bit_width = self.config.get("SEED_N_KEY_DLL_SAME_BIT_WIDTH")
-        self.disconnect_response_optional = self.config.get("DISCONNECT_RESPONSE_OPTIONAL")
+        self.seed_n_key_dll = self.config.seed_n_key_dll
+        self.seed_n_key_function = self.config.seed_n_key_function
+        self.seed_n_key_dll_same_bit_width = self.config.seed_n_key_dll_same_bit_width
+        self.disconnect_response_optional = self.config.disconnect_response_optional
         self.slaveProperties = SlaveProperties()
         self.slaveProperties.pgmProcessor = SlaveProperties()
+        self.slaveProperties.transport_layer = self.transport_name.upper()
 
     def __enter__(self):
         """Context manager entry part."""
@@ -324,7 +310,7 @@ class Master:
         return result
 
     @wrapped
-    def setRequest(self, mode: int, sessionConfigurationId: int):
+    def setRequest(self, mode: int, session_configuration_id: int):
         """Request to save to non-volatile memory.
 
         Parameters
@@ -340,8 +326,8 @@ class Master:
         return self.transport.request(
             types.Command.SET_REQUEST,
             mode,
-            sessionConfigurationId >> 8,
-            sessionConfigurationId & 0xFF,
+            session_configuration_id >> 8,
+            session_configuration_id & 0xFF,
         )
 
     @wrapped
@@ -408,7 +394,7 @@ class Master:
         return result
 
     @wrapped
-    def setMta(self, address: int, addressExt: int = 0x00):
+    def setMta(self, address: int, address_ext: int = 0x00):
         """Set Memory Transfer Address in slave.
 
         Parameters
@@ -423,9 +409,9 @@ class Master:
         and :meth:`programMax`.
 
         """
-        self.mta = types.MtaType(address, addressExt)  # Keep track of MTA (needed for error-handling).
+        self.mta = types.MtaType(address, address_ext)  # Keep track of MTA (needed for error-handling).
         addr = self.DWORD_pack(address)
-        return self.transport.request(types.Command.SET_MTA, 0, 0, addressExt, *addr)
+        return self.transport.request(types.Command.SET_MTA, 0, 0, address_ext, *addr)
 
     @wrapped
     def upload(self, length: int):
@@ -460,11 +446,11 @@ class Master:
                     response += data[1 : rem + 1]
                     rem = byte_count - len(response)
                 else:
-                    sleep(SHORT_SLEEP)
+                    short_sleep()
         return response
 
     @wrapped
-    def shortUpload(self, length: int, address: int, addressExt: int = 0x00):
+    def shortUpload(self, length: int, address: int, address_ext: int = 0x00):
         """Transfer data from slave to master.
         As opposed to :meth:`upload` this service also includes address information.
 
@@ -484,7 +470,7 @@ class Master:
         max_byte_count = self.slaveProperties.maxCto - 1
         if byte_count > max_byte_count:
             self.logger.warn(f"SHORT_UPLOAD: {byte_count} bytes exceeds the maximum value of {max_byte_count}.")
-        response = self.transport.request(types.Command.SHORT_UPLOAD, length, 0, addressExt, *addr)
+        response = self.transport.request(types.Command.SHORT_UPLOAD, length, 0, address_ext, *addr)
         return response[:byte_count]
 
     @wrapped
@@ -510,7 +496,7 @@ class Master:
         return types.BuildChecksumResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
     @wrapped
-    def transportLayerCmd(self, subCommand: int, *data: List[bytes]):
+    def transportLayerCmd(self, sub_command: int, *data: List[bytes]):
         """Execute transfer-layer specific command.
 
         Parameters
@@ -522,10 +508,10 @@ class Master:
         ----
         For details refer to XCP specification.
         """
-        return self.transport.request_optional_response(types.Command.TRANSPORT_LAYER_CMD, subCommand, *data)
+        return self.transport.request_optional_response(types.Command.TRANSPORT_LAYER_CMD, sub_command, *data)
 
     @wrapped
-    def userCmd(self, subCommand: int, data: bytes):
+    def userCmd(self, sub_command: int, data: bytes):
         """Execute proprietary command implemented in your XCP client.
 
         Parameters
@@ -537,7 +523,7 @@ class Master:
         .. note:: For details refer to your XCP client vendor.
         """
 
-        response = self.transport.request(types.Command.USER_CMD, subCommand, *data)
+        response = self.transport.request(types.Command.USER_CMD, sub_command, *data)
         return response
 
     @wrapped
@@ -561,7 +547,7 @@ class Master:
         self.slaveProperties.transportMinor = result.transportMinor
         return result
 
-    def fetch(self, length: int, limitPayload: int = None):  # TODO: pull
+    def fetch(self, length: int, limit_payload: int = None):  # TODO: pull
         """Convenience function for data-transfer from slave to master
         (Not part of the XCP Specification).
 
@@ -579,21 +565,21 @@ class Master:
         ----
         address is not included because of services implicitly setting address information like :meth:`getID` .
         """
-        if limitPayload and limitPayload < 8:
-            raise ValueError("Payload must be at least 8 bytes - given: {}".format(limitPayload))
+        if limit_payload and limit_payload < 8:
+            raise ValueError(f"Payload must be at least 8 bytes - given: {limit_payload}")
 
-        slaveBlockMode = self.slaveProperties.slaveBlockMode
-        if slaveBlockMode:
-            maxPayload = 255
+        slave_block_mode = self.slaveProperties.slaveBlockMode
+        if slave_block_mode:
+            max_payload = 255
         else:
-            maxPayload = self.slaveProperties.maxCto - 1
-        payload = min(limitPayload, maxPayload) if limitPayload else maxPayload
-        chunkSize = payload
-        chunks = range(length // chunkSize)
-        remaining = length % chunkSize
+            max_payload = self.slaveProperties.maxCto - 1
+        payload = min(limit_payload, max_payload) if limit_payload else max_payload
+        chunk_size = payload
+        chunks = range(length // chunk_size)
+        remaining = length % chunk_size
         result = []
         for _ in chunks:
-            data = self.upload(chunkSize)
+            data = self.upload(chunk_size)
             result.extend(data)
         if remaining:
             data = self.upload(remaining)
@@ -602,7 +588,7 @@ class Master:
 
     pull = fetch  # fetch() may be completely replaced by pull() someday.
 
-    def push(self, address: int, data: bytes, callback=None):
+    def push(self, address: int, address_ext: int, data: bytes, callback: Optional[Callable] = None):
         """Convenience function for data-transfer from master to slave.
         (Not part of the XCP Specification).
 
@@ -618,6 +604,7 @@ class Master:
         """
         self._generalized_downloader(
             address=address,
+            address_ext=address_ext,
             data=data,
             maxCto=self.slaveProperties.maxCto,
             maxBs=self.slaveProperties.maxBs,
@@ -628,7 +615,7 @@ class Master:
             callback=callback,
         )
 
-    def flash_program(self, address: int, data: bytes, callback=None):
+    def flash_program(self, address: int, data: bytes, callback: Optional[Callable] = None):
         """Convenience function for flash programing.
         (Not part of the XCP Specification).
 
@@ -657,6 +644,7 @@ class Master:
     def _generalized_downloader(
         self,
         address: int,
+        address_ext: int,
         data: bytes,
         maxCto: int,
         maxBs: int,
@@ -667,7 +655,7 @@ class Master:
         callback=None,
     ):
         """ """
-        self.setMta(address)
+        self.setMta(address, address_ext)
         minSt /= 10000.0
         block_downloader = functools.partial(
             self._block_downloader,
@@ -719,7 +707,9 @@ class Master:
                 if callback:
                     callback(percent_complete)
 
-    def _block_downloader(self, data: bytes, dl_func=None, dl_next_func=None, minSt=0):
+    def _block_downloader(
+        self, data: bytes, dl_func: Optional[Callable] = None, dl_next_func: Optional[Callable] = None, minSt: int = 0
+    ):
         """Re-usable block downloader.
 
         Parameters
@@ -763,14 +753,14 @@ class Master:
             delay(minSt)
 
     @wrapped
-    def download(self, data: bytes, blockModeLength=None, last=False):
+    def download(self, data: bytes, block_mode_length: Optional[int] = None, last: bool = False):
         """Transfer data from master to slave.
 
         Parameters
         ----------
         data : bytes
             Data to send to slave.
-        blockModeLength : int or None
+        block_mode_length : int or None
             for block mode, the download request must contain the length of the whole block,
             not just the length in the current packet. The whole block length can be given here for block-mode
             transfers. For normal mode, the length indicates the actual packet's payload length.
@@ -780,20 +770,20 @@ class Master:
         Adress is set via :meth:`setMta`
         """
 
-        if blockModeLength is None or last:
+        if block_mode_length is None or last:
             # standard mode
             length = len(data)
             response = self.transport.request(types.Command.DOWNLOAD, length, *data)
             return response
         else:
             # block mode
-            if not isinstance(blockModeLength, int):
-                raise TypeError("blockModeLength must be int!")
-            self.transport.block_request(types.Command.DOWNLOAD, blockModeLength, *data)
+            if not isinstance(block_mode_length, int):
+                raise TypeError("block_mode_length must be int!")
+            self.transport.block_request(types.Command.DOWNLOAD, block_mode_length, *data)
             return None
 
     @wrapped
-    def downloadNext(self, data: bytes, remainingBlockLength, last=False):
+    def downloadNext(self, data: bytes, remaining_block_length: int, last: bool = False):
         """Transfer data from master to slave (block mode).
 
         Parameters
@@ -808,12 +798,12 @@ class Master:
 
         if last:
             # last DOWNLOAD_NEXT packet in a block: the slave device has to send the response after this.
-            response = self.transport.request(types.Command.DOWNLOAD_NEXT, remainingBlockLength, *data)
+            response = self.transport.request(types.Command.DOWNLOAD_NEXT, remaining_block_length, *data)
             return response
         else:
             # the slave device won't respond to consecutive DOWNLOAD_NEXT packets in block mode,
             # so we must not wait for any response
-            self.transport.block_request(types.Command.DOWNLOAD_NEXT, remainingBlockLength, *data)
+            self.transport.block_request(types.Command.DOWNLOAD_NEXT, remaining_block_length, *data)
             return None
 
     @wrapped
@@ -827,21 +817,21 @@ class Master:
         return self.transport.request(types.Command.DOWNLOAD_MAX, *data)
 
     @wrapped
-    def shortDownload(self, address, addressExt, data):
+    def shortDownload(self, address: int, address_ext: int, data: bytes):
         length = len(data)
         addr = self.DWORD_pack(address)
-        return self.transport.request(types.Command.SHORT_DOWNLOAD, length, 0, addressExt, *addr, *data)
+        return self.transport.request(types.Command.SHORT_DOWNLOAD, length, 0, address_ext, *addr, *data)
 
     @wrapped
-    def modifyBits(self, shiftValue, andMask, xorMask):
+    def modifyBits(self, shift_value: int, and_mask: int, xor_mask: int):
         # A = ( (A) & ((~((dword)(((word)~MA)<<S))) )^((dword)(MX<<S)) )
-        am = self.WORD_pack(andMask)
-        xm = self.WORD_pack(xorMask)
-        return self.transport.request(types.Command.MODIFY_BITS, shiftValue, *am, *xm)
+        am = self.WORD_pack(and_mask)
+        xm = self.WORD_pack(xor_mask)
+        return self.transport.request(types.Command.MODIFY_BITS, shift_value, *am, *xm)
 
     # Page Switching Commands (PAG)
     @wrapped
-    def setCalPage(self, mode: int, logicalDataSegment: int, logicalDataPage: int):
+    def setCalPage(self, mode: int, logical_data_segment: int, logical_data_page: int):
         """Set calibration page.
 
         Parameters
@@ -853,10 +843,10 @@ class Master:
         logicalDataSegment : int
         logicalDataPage : int
         """
-        return self.transport.request(types.Command.SET_CAL_PAGE, mode, logicalDataSegment, logicalDataPage)
+        return self.transport.request(types.Command.SET_CAL_PAGE, mode, logical_data_segment, logical_data_page)
 
     @wrapped
-    def getCalPage(self, mode: int, logicalDataSegment: int):
+    def getCalPage(self, mode: int, logical_data_segment: int):
         """Get calibration page
 
         Parameters
@@ -864,7 +854,7 @@ class Master:
         mode : int
         logicalDataSegment : int
         """
-        response = self.transport.request(types.Command.GET_CAL_PAGE, mode, logicalDataSegment)
+        response = self.transport.request(types.Command.GET_CAL_PAGE, mode, logical_data_segment)
         return response[2]
 
     @wrapped
@@ -879,7 +869,7 @@ class Master:
         return types.GetPagProcessorInfoResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
     @wrapped
-    def getSegmentInfo(self, mode, segmentNumber, segmentInfo, mappingIndex):
+    def getSegmentInfo(self, mode: int, segment_number: int, segment_info: int, mapping_index: int):
         """Get specific information for a segment.
 
         Parameters
@@ -912,9 +902,9 @@ class Master:
         response = self.transport.request(
             types.Command.GET_SEGMENT_INFO,
             mode,
-            segmentNumber,
-            segmentInfo,
-            mappingIndex,
+            segment_number,
+            segment_info,
+            mapping_index,
         )
         if mode == 0:
             return types.GetSegmentInfoMode0Response.parse(response, byteOrder=self.slaveProperties.byteOrder)
@@ -924,7 +914,7 @@ class Master:
             return types.GetSegmentInfoMode2Response.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
     @wrapped
-    def getPageInfo(self, segmentNumber, pageNumber):
+    def getPageInfo(self, segment_number: int, page_number: int):
         """Get specific information for a page.
 
         Parameters
@@ -932,14 +922,14 @@ class Master:
         segmentNumber : int
         pageNumber : int
         """
-        response = self.transport.request(types.Command.GET_PAGE_INFO, 0, segmentNumber, pageNumber)
+        response = self.transport.request(types.Command.GET_PAGE_INFO, 0, segment_number, page_number)
         return (
             types.PageProperties.parse(bytes([response[0]]), byteOrder=self.slaveProperties.byteOrder),
             response[1],
         )
 
     @wrapped
-    def setSegmentMode(self, mode, segmentNumber):
+    def setSegmentMode(self, mode: int, segment_number: int):
         """Set mode for a segment.
 
         Parameters
@@ -948,21 +938,22 @@ class Master:
             1 = enable FREEZE Mode
         segmentNumber : int
         """
-        return self.transport.request(types.Command.SET_SEGMENT_MODE, mode, segmentNumber)
+        return self.transport.request(types.Command.SET_SEGMENT_MODE, mode, segment_number)
 
     @wrapped
-    def getSegmentMode(self, segmentNumber):
+    def getSegmentMode(self, segment_number: int):
         """Get mode for a segment.
 
         Parameters
         ----------
         segmentNumber : int
         """
-        response = self.transport.request(types.Command.GET_SEGMENT_MODE, 0, segmentNumber)
-        return response[1]
+        response = self.transport.request(types.Command.GET_SEGMENT_MODE, 0, segment_number)
+        if response:
+            return response[1]
 
     @wrapped
-    def copyCalPage(self, srcSegment, srcPage, dstSegment, dstPage):
+    def copyCalPage(self, src_segment: int, src_page: int, dst_segment: int, dst_page: int):
         """Copy page.
 
         Parameters
@@ -972,30 +963,33 @@ class Master:
         dstSegment : int
         dstPage : int
         """
-        return self.transport.request(types.Command.COPY_CAL_PAGE, srcSegment, srcPage, dstSegment, dstPage)
+        return self.transport.request(types.Command.COPY_CAL_PAGE, src_segment, src_page, dst_segment, dst_page)
 
     # DAQ
 
     @wrapped
-    def setDaqPtr(self, daqListNumber, odtNumber, odtEntryNumber):
-        self.currentDaqPtr = types.DaqPtr(daqListNumber, odtNumber, odtEntryNumber)  # Needed for errorhandling.
-        daqList = self.WORD_pack(daqListNumber)
-        response = self.transport.request(types.Command.SET_DAQ_PTR, 0, *daqList, odtNumber, odtEntryNumber)
+    def setDaqPtr(self, daq_list_number: int, odt_number: int, odt_entry_number: int):
+        self.currentDaqPtr = types.DaqPtr(daq_list_number, odt_number, odt_entry_number)  # Needed for errorhandling.
+        daq_list = self.WORD_pack(daq_list_number)
+        response = self.transport.request(types.Command.SET_DAQ_PTR, 0, *daq_list, odt_number, odt_entry_number)
+        self.stim.setDaqPtr(daq_list_number, odt_number, odt_entry_number)
         return response
 
     @wrapped
-    def clearDaqList(self, daqListNumber):
+    def clearDaqList(self, daq_list_number: int):
         """Clear DAQ list configuration.
 
         Parameters
         ----------
         daqListNumber : int
         """
-        daqList = self.WORD_pack(daqListNumber)
-        return self.transport.request(types.Command.CLEAR_DAQ_LIST, 0, *daqList)
+        daq_list = self.WORD_pack(daq_list_number)
+        result = self.transport.request(types.Command.CLEAR_DAQ_LIST, 0, *daq_list)
+        self.stim.clearDaqList(daq_list_number)
+        return result
 
     @wrapped
-    def writeDaq(self, bitOffset, entrySize, addressExt, address):
+    def writeDaq(self, bit_offset: int, entry_size: int, address_ext: int, address: int):
         """Write element in ODT entry.
 
         Parameters
@@ -1008,16 +1002,19 @@ class Master:
         address : int
         """
         addr = self.DWORD_pack(address)
-        return self.transport.request(types.Command.WRITE_DAQ, bitOffset, entrySize, addressExt, *addr)
+        result = self.transport.request(types.Command.WRITE_DAQ, bit_offset, entry_size, address_ext, *addr)
+        self.stim.writeDaq(bit_offset, entry_size, address_ext, address)
+        return result
 
     @wrapped
-    def setDaqListMode(self, mode, daqListNumber, eventChannelNumber, prescaler, priority):
-        dln = self.WORD_pack(daqListNumber)
-        ecn = self.WORD_pack(eventChannelNumber)
+    def setDaqListMode(self, mode: int, daq_list_number: int, event_channel_number: int, prescaler: int, priority: int):
+        dln = self.WORD_pack(daq_list_number)
+        ecn = self.WORD_pack(event_channel_number)
+        self.stim.setDaqListMode(mode, daq_list_number, event_channel_number, prescaler, priority)
         return self.transport.request(types.Command.SET_DAQ_LIST_MODE, mode, *dln, *ecn, prescaler, priority)
 
     @wrapped
-    def getDaqListMode(self, daqListNumber):
+    def getDaqListMode(self, daq_list_number: int):
         """Get mode from DAQ list.
 
         Parameters
@@ -1028,12 +1025,12 @@ class Master:
         -------
         `pyxcp.types.GetDaqListModeResponse`
         """
-        dln = self.WORD_pack(daqListNumber)
+        dln = self.WORD_pack(daq_list_number)
         response = self.transport.request(types.Command.GET_DAQ_LIST_MODE, 0, *dln)
         return types.GetDaqListModeResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
     @wrapped
-    def startStopDaqList(self, mode, daqListNumber):
+    def startStopDaqList(self, mode: int, daq_list_number: int):
         """Start /stop/select DAQ list.
 
         Parameters
@@ -1044,12 +1041,15 @@ class Master:
             2 = select
         daqListNumber : int
         """
-        dln = self.WORD_pack(daqListNumber)
+        dln = self.WORD_pack(daq_list_number)
         response = self.transport.request(types.Command.START_STOP_DAQ_LIST, mode, *dln)
-        return types.StartStopDaqListResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
+        self.stim.startStopDaqList(mode, daq_list_number)
+        first_pid = types.StartStopDaqListResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
+        self.stim.set_first_pid(daq_list_number, first_pid.firstPid)
+        return first_pid
 
     @wrapped
-    def startStopSynch(self, mode):
+    def startStopSynch(self, mode: int):
         """Start/stop DAQ lists (synchronously).
 
         Parameters
@@ -1059,23 +1059,25 @@ class Master:
             1 = start selected
             2 = stop selected
         """
-        return self.transport.request(types.Command.START_STOP_SYNCH, mode)
+        res = self.transport.request(types.Command.START_STOP_SYNCH, mode)
+        self.stim.startStopSynch(mode)
+        return res
 
     @wrapped
-    def writeDaqMultiple(self, daqElements):
+    def writeDaqMultiple(self, daq_elements: dict):
         """Write multiple elements in ODT.
 
         Parameters
         ----------
         daqElements : list of `dict` containing the following keys: *bitOffset*, *size*, *address*, *addressExt*.
         """
-        if len(daqElements) > self.slaveProperties.maxWriteDaqMultipleElements:
-            raise ValueError("At most {} daqElements are permitted.".format(self.slaveProperties.maxWriteDaqMultipleElements))
+        if len(daq_elements) > self.slaveProperties.maxWriteDaqMultipleElements:
+            raise ValueError(f"At most {self.slaveProperties.maxWriteDaqMultipleElements} daqElements are permitted.")
         data = bytearray()
-        data.append(len(daqElements))
+        data.append(len(daq_elements))
 
-        for daqElement in daqElements:
-            data.extend(types.DaqElement.build(daqElement, byteOrder=self.slaveProperties.byteOrder))
+        for daq_element in daq_elements:
+            data.extend(types.DaqElement.build(daq_element, byteOrder=self.slaveProperties.byteOrder))
 
         return self.transport.request(types.Command.WRITE_DAQ_MULTIPLE, *data)
 
@@ -1127,19 +1129,19 @@ class Master:
         return types.GetDaqResolutionInfoResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
     @wrapped
-    def getDaqListInfo(self, daqListNumber):
+    def getDaqListInfo(self, daq_list_number: int):
         """Get specific information for a DAQ list.
 
         Parameters
         ----------
         daqListNumber : int
         """
-        dln = self.WORD_pack(daqListNumber)
+        dln = self.WORD_pack(daq_list_number)
         response = self.transport.request(types.Command.GET_DAQ_LIST_INFO, 0, *dln)
         return types.GetDaqListInfoResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
     @wrapped
-    def getDaqEventInfo(self, eventChannelNumber):
+    def getDaqEventInfo(self, event_channel_number: int):
         """Get specific information for an event channel.
 
         Parameters
@@ -1150,12 +1152,12 @@ class Master:
         -------
         `pyxcp.types.GetEventChannelInfoResponse`
         """
-        ecn = self.WORD_pack(eventChannelNumber)
+        ecn = self.WORD_pack(event_channel_number)
         response = self.transport.request(types.Command.GET_DAQ_EVENT_INFO, 0, *ecn)
         return types.GetEventChannelInfoResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
     @wrapped
-    def dtoCtrProperties(self, modifier, eventChannel, relatedEventChannel, mode):
+    def dtoCtrProperties(self, modifier: int, event_channel: int, related_event_channel: int, mode: int):
         """DTO CTR properties
 
         Parameters
@@ -1171,14 +1173,16 @@ class Master:
         """
         data = bytearray()
         data.append(modifier)
-        data.extend(self.WORD_pack(eventChannel))
-        data.extend(self.WORD_pack(relatedEventChannel))
+        data.extend(self.WORD_pack(event_channel))
+        data.extend(self.WORD_pack(related_event_channel))
         data.append(mode)
         response = self.transport.request(types.Command.DTO_CTR_PROPERTIES, *data)
         return types.DtoCtrPropertiesResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
     @wrapped
-    def setDaqPackedMode(self, daqListNumber, daqPackedMode, dpmTimestampMode=None, dpmSampleCount=None):
+    def setDaqPackedMode(
+        self, daq_list_number: int, daq_packed_mode: int, dpm_timestamp_mode: int = None, dpm_sample_count: int = None
+    ):
         """Set DAQ List Packed Mode.
 
         Parameters
@@ -1187,19 +1191,19 @@ class Master:
         daqPackedMode : int
         """
         params = []
-        dln = self.WORD_pack(daqListNumber)
+        dln = self.WORD_pack(daq_list_number)
         params.extend(dln)
-        params.append(daqPackedMode)
+        params.append(daq_packed_mode)
 
-        if daqPackedMode == 1 or daqPackedMode == 2:
-            params.append(dpmTimestampMode)
-            dsc = self.WORD_pack(dpmSampleCount)
+        if daq_packed_mode == 1 or daq_packed_mode == 2:
+            params.append(dpm_timestamp_mode)
+            dsc = self.WORD_pack(dpm_sample_count)
             params.extend(dsc)
 
         return self.transport.request(types.Command.SET_DAQ_PACKED_MODE, *params)
 
     @wrapped
-    def getDaqPackedMode(self, daqListNumber):
+    def getDaqPackedMode(self, daq_list_number: int):
         """Get DAQ List Packed Mode.
 
         This command returns information of the currently active packed mode of
@@ -1209,7 +1213,7 @@ class Master:
         ----------
         daqListNumber : int
         """
-        dln = self.WORD_pack(daqListNumber)
+        dln = self.WORD_pack(daq_list_number)
         response = self.transport.request(types.Command.GET_DAQ_PACKED_MODE, *dln)
         return types.GetDaqPackedModeResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
@@ -1217,10 +1221,12 @@ class Master:
     @wrapped
     def freeDaq(self):
         """Clear dynamic DAQ configuration."""
-        return self.transport.request(types.Command.FREE_DAQ)
+        result = self.transport.request(types.Command.FREE_DAQ)
+        self.stim.freeDaq()
+        return result
 
     @wrapped
-    def allocDaq(self, daqCount):
+    def allocDaq(self, daq_count: int):
         """Allocate DAQ lists.
 
         Parameters
@@ -1228,18 +1234,24 @@ class Master:
         daqCount : int
             number of DAQ lists to be allocated
         """
-        dq = self.WORD_pack(daqCount)
-        return self.transport.request(types.Command.ALLOC_DAQ, 0, *dq)
+        dq = self.WORD_pack(daq_count)
+        result = self.transport.request(types.Command.ALLOC_DAQ, 0, *dq)
+        self.stim.allocDaq(daq_count)
+        return result
 
     @wrapped
-    def allocOdt(self, daqListNumber, odtCount):
-        dln = self.WORD_pack(daqListNumber)
-        return self.transport.request(types.Command.ALLOC_ODT, 0, *dln, odtCount)
+    def allocOdt(self, daq_list_number: int, odt_count: int):
+        dln = self.WORD_pack(daq_list_number)
+        result = self.transport.request(types.Command.ALLOC_ODT, 0, *dln, odt_count)
+        self.stim.allocOdt(daq_list_number, odt_count)
+        return result
 
     @wrapped
-    def allocOdtEntry(self, daqListNumber, odtNumber, odtEntriesCount):
-        dln = self.WORD_pack(daqListNumber)
-        return self.transport.request(types.Command.ALLOC_ODT_ENTRY, 0, *dln, odtNumber, odtEntriesCount)
+    def allocOdtEntry(self, daq_list_number: int, odt_number: int, odt_entries_count: int):
+        dln = self.WORD_pack(daq_list_number)
+        result = self.transport.request(types.Command.ALLOC_ODT_ENTRY, 0, *dln, odt_number, odt_entries_count)
+        self.stim.allocOdtEntry(daq_list_number, odt_number, odt_entries_count)
+        return result
 
     # PGM
     @wrapped
@@ -1263,7 +1275,7 @@ class Master:
         return result
 
     @wrapped
-    def programClear(self, mode: int, clearRange: int):
+    def programClear(self, mode: int, clear_range: int):
         """Clear a part of non-volatile memory.
 
         Parameters
@@ -1273,18 +1285,18 @@ class Master:
             0x01 = the functional access mode is active
         clearRange : int
         """
-        cr = self.DWORD_pack(clearRange)
+        cr = self.DWORD_pack(clear_range)
         response = self.transport.request(types.Command.PROGRAM_CLEAR, mode, 0, 0, *cr)
         # ERR_ACCESS_LOCKED
         return response
 
     @wrapped
-    def program(self, data: bytes, blockLength, last=False):
+    def program(self, data: bytes, block_length: int, last: bool = False):
         """Parameters
         ----------
         data : bytes
             Data to send to slave.
-        blockModeLength : int
+        block_mode_length : int
             the program request must contain the length of the whole block, not just the length
             in the current packet.
         last : bool
@@ -1303,12 +1315,12 @@ class Master:
         #    d.extend(self.AG_pack(e))
         if last:
             # last PROGRAM_NEXT packet in a block: the slave device has to send the response after this.
-            response = self.transport.request(types.Command.PROGRAM, blockLength, *data)
+            response = self.transport.request(types.Command.PROGRAM, block_length, *data)
             return response
         else:
             # the slave device won't respond to consecutive PROGRAM_NEXT packets in block mode,
             # so we must not wait for any response
-            self.transport.block_request(types.Command.PROGRAM, blockLength, *data)
+            self.transport.block_request(types.Command.PROGRAM, block_length, *data)
             return None
 
     @wrapped
@@ -1329,9 +1341,9 @@ class Master:
         return result
 
     @wrapped
-    def getSectorInfo(self, mode, sectorNumber):
+    def getSectorInfo(self, mode: int, sector_number: int):
         """Get specific information for a sector."""
-        response = self.transport.request(types.Command.GET_SECTOR_INFO, mode, sectorNumber)
+        response = self.transport.request(types.Command.GET_SECTOR_INFO, mode, sector_number)
         if mode == 0 or mode == 1:
             return types.GetSectorInfoResponseMode01.parse(response, byteOrder=self.slaveProperties.byteOrder)
         elif mode == 2:
@@ -1344,17 +1356,17 @@ class Master:
         return self.transport.request(types.Command.PROGRAM_PREPARE, 0x00, *cs)
 
     @wrapped
-    def programFormat(self, compressionMethod, encryptionMethod, programmingMethod, accessMethod):
+    def programFormat(self, compression_method: int, encryption_method: int, programming_method: int, access_method: int):
         return self.transport.request(
             types.Command.PROGRAM_FORMAT,
-            compressionMethod,
-            encryptionMethod,
-            programmingMethod,
-            accessMethod,
+            compression_method,
+            encryption_method,
+            programming_method,
+            access_method,
         )
 
     @wrapped
-    def programNext(self, data: bytes, remainingBlockLength: int, last: bool = False):
+    def programNext(self, data: bytes, remaining_block_length: int, last: bool = False):
         # d = bytearray()
         # d.append(len(data))
         # if self.slaveProperties.addressGranularity == types.AddressGranularity.DWORD:
@@ -1363,16 +1375,16 @@ class Master:
         #    d.extend(self.AG_pack(e))
         if last:
             # last PROGRAM_NEXT packet in a block: the slave device has to send the response after this.
-            response = self.transport.request(types.Command.PROGRAM_NEXT, remainingBlockLength, *data)
+            response = self.transport.request(types.Command.PROGRAM_NEXT, remaining_block_length, *data)
             return response
         else:
             # the slave device won't respond to consecutive PROGRAM_NEXT packets in block mode,
             # so we must not wait for any response
-            self.transport.block_request(types.Command.PROGRAM_NEXT, remainingBlockLength, *data)
+            self.transport.block_request(types.Command.PROGRAM_NEXT, remaining_block_length, *data)
             return None
 
     @wrapped
-    def programMax(self, data):
+    def programMax(self, data: bytes):
         d = bytearray()
         if self.slaveProperties.addressGranularity == types.AddressGranularity.WORD:
             d.extend(b"\x00")  # alignment bytes
@@ -1383,11 +1395,11 @@ class Master:
         return self.transport.request(types.Command.PROGRAM_MAX, *d)
 
     @wrapped
-    def programVerify(self, verMode, verType, verValue):
+    def programVerify(self, ver_mode: int, ver_type: int, ver_value: int):
         data = bytearray()
-        data.extend(self.WORD_pack(verType))
-        data.extend(self.DWORD_pack(verValue))
-        return self.transport.request(types.Command.PROGRAM_VERIFY, verMode, *data)
+        data.extend(self.WORD_pack(ver_type))
+        data.extend(self.DWORD_pack(ver_value))
+        return self.transport.request(types.Command.PROGRAM_VERIFY, ver_mode, *data)
 
     # DBG
 
@@ -1610,9 +1622,9 @@ class Master:
         return types.DbgLlbtResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
     @wrapped
-    def timeCorrelationProperties(self, setProperties, getPropertiesRequest, clusterId):
+    def timeCorrelationProperties(self, set_properties: int, get_properties_request: int, cluster_id: int):
         response = self.transport.request(
-            types.Command.TIME_CORRELATION_PROPERTIES, setProperties, getPropertiesRequest, 0, *self.WORD_pack(clusterId)
+            types.Command.TIME_CORRELATION_PROPERTIES, set_properties, get_properties_request, 0, *self.WORD_pack(cluster_id)
         )
         return types.TimeCorrelationPropertiesResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
@@ -1621,16 +1633,17 @@ class Master:
     @broadcasted
     @wrapped
     def getSlaveID(self, mode: int):
-        self.transportLayerCmd(types.TransportLayerCommands.GET_SLAVE_ID, "X", "C", "P", mode)
+        response = self.transportLayerCmd(types.TransportLayerCommands.GET_SLAVE_ID, ord("X"), ord("C"), ord("P"), mode)
+        return types.GetSlaveIdResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
-    def getDaqId(self, daqListNumber: int):
-        response = self.transportLayerCmd(types.TransportLayerCommands.GET_DAQ_ID, *self.WORD_pack(daqListNumber))
-        if response:
-            return types.GetDaqIdResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
+    def getDaqId(self, daq_list_number: int):
+        response = self.transportLayerCmd(types.TransportLayerCommands.GET_DAQ_ID, *self.WORD_pack(daq_list_number))
+        # if response:
+        return types.GetDaqIdResponse.parse(response, byteOrder=self.slaveProperties.byteOrder)
 
-    def setDaqId(self, daqListNumber: int, identifier: int):
+    def setDaqId(self, daq_list_number: int, identifier: int):
         response = self.transportLayerCmd(
-            types.TransportLayerCommands.SET_DAQ_ID, *self.WORD_pack(daqListNumber), *self.DWORD_pack(identifier)
+            types.TransportLayerCommands.SET_DAQ_ID, *self.WORD_pack(daq_list_number), *self.DWORD_pack(identifier)
         )
         return response
 
@@ -1650,14 +1663,14 @@ class Master:
         """
         self.setMta(addr)
         cs = self.buildChecksum(length)
-        self.logger.debug("BuildChecksum return'd: 0x{:08X} [{}]".format(cs.checksum, cs.checksumType))
+        self.logger.debug(f"BuildChecksum return'd: 0x{cs.checksum:08X} [{cs.checksumType}]")
         self.setMta(addr)
         data = self.fetch(length)
         cc = checksum.check(data, cs.checksumType)
-        self.logger.debug("Our checksum          : 0x{:08X}".format(cc))
+        self.logger.debug(f"Our checksum          : 0x{cc:08X}")
         return cs.checksum == cc
 
-    def getDaqInfo(self):
+    def getDaqInfo(self, include_event_lists=True):
         """Get DAQ information: processor, resolution, events."""
         result = {}
         dpi = self.getDaqProcessorInfo()
@@ -1696,28 +1709,50 @@ class Master:
             },
         }
         result["resolution"] = resolutionInfo
-
         channels = []
-        for ecn in range(dpi.maxEventChannel):
-            eci = self.getDaqEventInfo(ecn)
-            name = self.fetch(eci.eventChannelNameLength)
-            if name:
-                name = decode_bytes(name)
-            channel = {
-                "name": name,
-                "priority": eci["eventChannelPriority"],
-                "unit": eci["eventChannelTimeUnit"],
-                "cycle": eci["eventChannelTimeCycle"],
-                "maxDaqList": eci["maxDaqList"],
-                "properties": {
-                    "consistency": eci["daqEventProperties"]["consistency"],
-                    "daq": eci["daqEventProperties"]["daq"],
-                    "stim": eci["daqEventProperties"]["stim"],
-                    "packed": eci["daqEventProperties"]["packed"],
-                },
-            }
-            channels.append(channel)
+        daq_events = []
+        if include_event_lists:
+            for ecn in range(dpi.maxEventChannel):
+                eci = self.getDaqEventInfo(ecn)
+                cycle = eci["eventChannelTimeCycle"]
+                maxDaqList = eci["maxDaqList"]
+                priority = eci["eventChannelPriority"]
+                time_unit = eci["eventChannelTimeUnit"]
+                consistency = eci["daqEventProperties"]["consistency"]
+                daq_supported = eci["daqEventProperties"]["daq"]
+                stim_supported = eci["daqEventProperties"]["stim"]
+                packed_supported = eci["daqEventProperties"]["packed"]
+                name = self.fetch(eci.eventChannelNameLength)
+                if name:
+                    name = decode_bytes(name)
+                channel = {
+                    "name": name,
+                    "priority": eci["eventChannelPriority"],
+                    "unit": eci["eventChannelTimeUnit"],
+                    "cycle": eci["eventChannelTimeCycle"],
+                    "maxDaqList": eci["maxDaqList"],
+                    "properties": {
+                        "consistency": consistency,
+                        "daq": daq_supported,
+                        "stim": stim_supported,
+                        "packed": packed_supported,
+                    },
+                }
+                daq_event_info = DaqEventInfo(
+                    name,
+                    types.EVENT_CHANNEL_TIME_UNIT_TO_EXP[time_unit],
+                    cycle,
+                    maxDaqList,
+                    priority,
+                    consistency,
+                    daq_supported,
+                    stim_supported,
+                    packed_supported,
+                )
+                daq_events.append(daq_event_info)
+                channels.append(channel)
         result["channels"] = channels
+        self.stim.setDaqEventInfo(daq_events)
         return result
 
     def getCurrentProtectionStatus(self):
@@ -1760,12 +1795,14 @@ class Master:
             In case of DLL related issues.
         """
         import re
-        from pyxcp.dllif import getKey, SeedNKeyResult, SeedNKeyError
+
+        from pyxcp.dllif import SeedNKeyError, SeedNKeyResult, getKey
 
         MAX_PAYLOAD = self.slaveProperties["maxCto"] - 2
 
-        if not self.seedNKeyDLL:
-            raise RuntimeError("No seed and key DLL specified, cannot proceed.")
+        protection_status = self.getCurrentProtectionStatus()
+        if any(protection_status.values()) and (not (self.seed_n_key_dll or self.seed_n_key_function)):
+            raise RuntimeError("Neither seed-and-key DLL nor function specified, cannot proceed.")  # TODO: ConfigurationError
         if resources is None:
             result = []
             if self.slaveProperties["supportsCalpag"]:
@@ -1777,11 +1814,10 @@ class Master:
             if self.slaveProperties["supportsPgm"]:
                 result.append("pgm")
             resources = ",".join(result)
-        protection_status = self.getCurrentProtectionStatus()
         resource_names = [r.lower() for r in re.split(r"[ ,]", resources) if r]
         for name in resource_names:
             if name not in types.RESOURCE_VALUES:
-                raise ValueError("Invalid resource name '{}'.".format(name))
+                raise ValueError(f"Invalid resource name {name!r}.")
             if not protection_status[name]:
                 continue
             resource_value = types.RESOURCE_VALUES[name]
@@ -1795,25 +1831,33 @@ class Master:
                 while remaining > 0:
                     result = self.getSeed(types.XcpGetSeedMode.REMAINING, resource_value)
                     seed.extend(list(result.seed))
-                    remaining = result.length
-            result, key = getKey(
-                self.logger,
-                self.seedNKeyDLL,
-                resource_value,
-                bytes(seed),
-                self.seedNKeyDLL_same_bit_width,
-            )
+                    remaining -= result.length
+            self.logger.debug(f"Got seed {seed!r} for resource {resource_value!r}.")
+            if self.seed_n_key_function:
+                key = self.seed_n_key_function(resource_value, bytes(seed))
+                self.logger.debug(f"Using seed and key function {self.seed_n_key_function.__name__!r}().")
+                result = SeedNKeyResult.ACK
+            elif self.seed_n_key_dll:
+                self.logger.debug(f"Using seed and key DLL {self.seed_n_key_dll!r}.")
+                result, key = getKey(
+                    self.logger,
+                    self.seed_n_key_dll,
+                    resource_value,
+                    bytes(seed),
+                    self.seed_n_key_dll_same_bit_width,
+                )
             if result == SeedNKeyResult.ACK:
                 key = list(key)
-                total_length = len(key)
-                offset = 0
-                while offset < total_length:
-                    data = key[offset : offset + MAX_PAYLOAD]
-                    key_length = len(data)
-                    offset += key_length
-                    self.unlock(key_length, data)
+                self.logger.debug(f"Unlocking resource {resource_value!r} with key {key!r}.")
+                remaining = len(key)
+                while key:
+                    data = key[:MAX_PAYLOAD]
+                    key_len = len(data)
+                    self.unlock(remaining, data)
+                    key = key[MAX_PAYLOAD:]
+                    remaining -= key_len
             else:
-                raise SeedNKeyError("SeedAndKey DLL returned: {}".format(SeedNKeyResult(result).name))
+                raise SeedNKeyError(f"SeedAndKey DLL returned: {SeedNKeyResult(result).name!r}")
 
     def identifier(self, id_value: int) -> str:
         """Return the identifier for the given value.
@@ -1891,17 +1935,71 @@ class Master:
 
         gen = make_generator(scan_ranges)
         for id_value, name in gen:
-            response = b""
-            try:
-                response = self.identifier(id_value)
-            except types.XcpResponseError:
-                # don't depend on confirming implementation, i.e.: ID not implemented ==> empty response.
-                pass
-            except Exception:
-                raise
-            if response:
+            status, response = self.try_command(self.identifier, id_value)
+            if status == types.TryCommandResult.OK and response:
                 result[name] = response
+            elif status == types.TryCommandResult.XCP_ERROR and response.error_code == types.XcpError.ERR_CMD_UNKNOWN:
+                break  # Nothing to do here.
+            elif status == types.TryCommandResult.OTHER_ERROR:
+                raise RuntimeError(f"Error while scanning for ID {id_value}: {response!r}")
         return result
+
+    @property
+    def start_datetime(self) -> int:
+        """"""
+        return self.transport.start_datetime
+
+    def try_command(self, cmd: Callable, *args, **kws) -> Tuple[types.TryCommandResult, Any]:
+        """Call master functions and handle XCP errors more gracefuly.
+
+        Parameter
+        ---------
+        cmd: Callable
+        args: list
+            variable length arguments to `cmd`.
+        kws: dict
+            keyword arguments to `cmd`.
+
+            `extra_msg`: str
+                Additional info to log message (not passed to `cmd`).
+
+        Returns
+        -------
+
+        Note
+        ----
+        Mainly used for plug-and-play applications, e.g. `id_scanner` may confronted with `ERR_OUT_OF_RANGE` errors, which
+        is normal for this kind of applications -- or to test for optional commands.
+        Use carefuly not to hide serious error causes.
+        """
+        try:
+            extra_msg: Optional[str] = kws.get("extra_msg")
+            if extra_msg:
+                kws.pop("extra_msg")
+            else:
+                extra_msg = ""
+            silent: Optional[bool] = kws.get("silent")
+            if silent:
+                kws.pop("silent")
+            else:
+                silent = False
+            res = cmd(*args, **kws)
+        except SystemExit as e:
+            # print(f"\tUnexpected error while executing command {cmd.__name__!r}: {e!r}")
+            if e.error_code == types.XcpError.ERR_CMD_UNKNOWN:
+                # This is a rather common use-case, so let the user know that there is some functionality missing.
+                if not silent:
+                    if extra_msg:
+                        self.logger.warning(f"Optional command {cmd.__name__!r} not implemented -- {extra_msg!r}")
+                    else:
+                        self.logger.warning(f"Optional command {cmd.__name__!r} not implemented.")
+                return (types.TryCommandResult.NOT_IMPLEMENTED, e)
+            else:
+                return (types.TryCommandResult.XCP_ERROR, e)
+        except Exception as e:
+            return (types.TryCommandResult.OTHER_ERROR, e)
+        else:
+            return (types.TryCommandResult.OK, res)
 
 
 def ticks_to_seconds(ticks, resolution):
@@ -1916,6 +2014,7 @@ def ticks_to_seconds(ticks, resolution):
     warnings.warn(
         "ticks_to_seconds() deprecated, use factory :func:`make_tick_converter` instead.",
         Warning,
+        stacklevel=1,
     )
     return (10 ** types.DAQ_TIMESTAMP_UNIT_TO_EXP[resolution.timestampMode.unit]) * resolution.timestampTicks * ticks
 
