@@ -131,3 +131,16 @@ result.xml
 /pyxcp/recorder/mio/
 /pyxcp/recorder/simde/
 /pyxcp/recorder/coro/
+CMakeCache.txt
+CMakeFiles/cmake.check_cache
+CMakeFiles/CMakeConfigureLog.yaml
+CMakeFiles/3.30.4/CMakeCCompiler.cmake
+CMakeFiles/3.30.4/CMakeCXXCompiler.cmake
+CMakeFiles/3.30.4/CMakeDetermineCompilerABI_C.bin
+CMakeFiles/3.30.4/CMakeDetermineCompilerABI_CXX.bin
+CMakeFiles/3.30.4/CMakeRCCompiler.cmake
+CMakeFiles/3.30.4/CMakeSystem.cmake
+CMakeFiles/3.30.4/CompilerIdC/a.exe
+CMakeFiles/3.30.4/CompilerIdC/CMakeCCompilerId.c
+CMakeFiles/3.30.4/CompilerIdCXX/a.exe
+CMakeFiles/3.30.4/CompilerIdCXX/CMakeCXXCompilerId.cpp

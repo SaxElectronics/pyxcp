@@ -2,7 +2,7 @@
 import abc
 import logging
 import threading
-from collections import deque
+from collections import defaultdict, deque
 from typing import Any, Dict, Optional, Set, Type
 
 import pyxcp.types as types
@@ -314,6 +314,11 @@ class BaseTransport(metaclass=abc.ABCMeta):
                     MSG = f"Response timed out (timeout={self.timeout / 1_000_000_000}s)"
                     with self.policy_lock:
                         self.policy.feed(types.FrameCategory.METADATA, self.counter_send, self.timestamp.value, bytes(MSG, "ascii"))
+                    # ensure the bus is closed so the port is freed
+                    try:
+                        self.close()
+                    except Exception:
+                        pass
                     raise types.XcpTimeoutError(MSG) from None
                 else:
                     self.timing.stop()
