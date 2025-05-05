@@ -2,6 +2,7 @@
 from collections import defaultdict
 from collections import deque
 
+
 class DaqDataHandler:
     def __init__(self):
         self.daq_data_locks = {}
@@ -71,4 +72,3 @@ class DaqDataHandler:
         if daq_list_number in self.complete_samples and self.complete_samples[daq_list_number]:
             return self.complete_samples[daq_list_number].popleft()
         return None
-

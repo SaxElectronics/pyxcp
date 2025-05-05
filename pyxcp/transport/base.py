@@ -19,6 +19,7 @@ from pyxcp.utils import (
 
 from pyxcp.custom_patches.daqlist import DaqDataHandler
 
+
 class FrameAcquisitionPolicy:
     """
     Base class for all frame acquisition policies.

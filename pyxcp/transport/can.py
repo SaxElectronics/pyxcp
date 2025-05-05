@@ -345,9 +345,9 @@ class Can(BaseTransport):
     # CODE START to add DAQ list CAN IDs
     def _load_daq_identifiers(self, config):
         """Load DAQ list CAN IDs from configuration.
-        
+
         Searches for CAN_ID_DAQ0, CAN_ID_DAQ1, etc. until no more are found.
-        
+
         Returns:
             list: List of Identifier objects for DAQ channels
         """
