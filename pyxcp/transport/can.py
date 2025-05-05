@@ -282,6 +282,9 @@ class PythonCanWrapper:
         else:
             if frame is None or not len(frame.data):
                 return None  # Timeout condition.
+            if frame.arbitration_id not in [self.parent.can_id_master.id] + [id_.id for id_ in self.parent.daq_list_can_ids]:
+                self.parent.logger.debug("Received frame with unexpected arbitration ID: {}".format(frame.arbitration_id))
+                return None
             extended = frame.is_extended_id
             identifier = Identifier.make_identifier(frame.arbitration_id, extended)
             return Frame(
@@ -324,6 +327,9 @@ class Can(BaseTransport):
         if self.config.daq_identifier:
             for daq_id in self.config.daq_identifier:
                 self.daq_identifier.append(Identifier(daq_id))
+         # CODE START to add DAQ list CAN IDs
+        self.daq_list_can_ids = self._load_daq_identifiers(self.config)        # Start from DAQ0 and go upwards
+        # CODE END to add DAQ list CAN IDs
         self.max_dlc_required = self.config.max_dlc_required
         self.padding_value = self.config.padding_value
         self.interface_name = self.config.interface
@@ -335,6 +341,27 @@ class Can(BaseTransport):
             f"XCPonCAN - Master-ID (Tx): 0x{self.can_id_master.id:08X}{self.can_id_master.type_str} -- "
             f"Slave-ID (Rx): 0x{self.can_id_slave.id:08X}{self.can_id_slave.type_str}"
         )
+    
+    # CODE START to add DAQ list CAN IDs
+    def _load_daq_identifiers(self, config):
+        """Load DAQ list CAN IDs from configuration.
+        
+        Searches for CAN_ID_DAQ0, CAN_ID_DAQ1, etc. until no more are found.
+        
+        Returns:
+            list: List of Identifier objects for DAQ channels
+        """
+        daq_list_can_ids = []
+        n = 0
+        while True:
+            daq_identifier = config.get(f"CAN_ID_DAQ{n}")
+            if daq_identifier is None:
+                # Break the loop if no more DAQ identifiers are found
+                break
+            daq_list_can_ids.append(Identifier(daq_identifier))
+            n += 1  # Increment to check for the next DAQ
+        return daq_list_can_ids
+        # CODE START to add DAQ list CAN IDs
 
     def get_interface_parameters(self) -> Dict[str, Any]:
         result = dict(channel=self.config.channel)

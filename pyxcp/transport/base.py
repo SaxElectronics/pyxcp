@@ -17,6 +17,7 @@ from pyxcp.utils import (
     short_sleep,
 )
 
+from pyxcp.custom_patches.daqlist import DaqDataHandler
 
 class FrameAcquisitionPolicy:
     """
@@ -39,7 +40,8 @@ class FrameAcquisitionPolicy:
     def filtered_out(self) -> Set[types.FrameCategory]:
         return self._frame_types_to_filter_out
 
-    def feed(self, frame_type: types.FrameCategory, counter: int, timestamp: int, payload: bytes) -> None: ...  # noqa: E704
+    def feed(self, frame_type: types.FrameCategory, counter: int, timestamp: float, payload: bytes) -> None:
+        pass
 
     def finalize(self) -> None:
         """
@@ -160,18 +162,21 @@ class BaseTransport(metaclass=abc.ABCMeta):
         self.timer_restart_event: threading.Event = threading.Event()
         self.timing: Timing = Timing()
         self.resQueue: deque = deque()
+        self.daqQueue = deque()
+        self.evQueue = deque()
+        self.servQueue = deque()
         self.listener: threading.Thread = threading.Thread(
             target=self.listen,
             args=(),
             kwargs={},
         )
-
         self.first_daq_timestamp: Optional[int] = None
         # self.timestamp_origin = self.timestamp.value
         # self.datetime_origin = datetime.fromtimestamp(self.timestamp_origin)
         self.pre_send_timestamp: int = self.timestamp.value
         self.post_send_timestamp: int = self.timestamp.value
         self.recv_timestamp: int = self.timestamp.value
+        self.daq_data_handler = DaqDataHandler()  # DAQ data handler instance
 
     def __del__(self) -> None:
         self.finish_listener()
@@ -401,7 +406,8 @@ class BaseTransport(metaclass=abc.ABCMeta):
                 timestamp = 0
             with self.policy_lock:
                 self.policy.feed(types.FrameCategory.DAQ, self.counter_received, timestamp, response)
-
+                self.daqQueue.append((response, self.counter_received, length, timestamp))
+                self.daq_data_handler._process_daq_data_simple(response)
     # @abc.abstractproperty
     # @property
     # def transport_layer_interface(self) -> Any:
@@ -410,7 +416,6 @@ class BaseTransport(metaclass=abc.ABCMeta):
     # @transport_layer_interface.setter
     # def transport_layer_interface(self, value: Any) -> None:
     #    self._transport_layer_interface = value
-
 
 def create_transport(name: str, *args, **kws) -> BaseTransport:
     """Factory function for transports.

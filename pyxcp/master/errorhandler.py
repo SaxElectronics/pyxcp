@@ -162,10 +162,10 @@ class Repeater:
         """
         # print("\t\tCOUNTER:", hex(id(self)), self._counter)
         if self._counter == Repeater.INFINITE:
-            return True
+            return False
         elif self._counter > 0:
             self._counter -= 1
-            return True
+            return False
         else:
             return False
 
