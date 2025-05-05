@@ -139,6 +139,7 @@ class Repeater:
                 - REPEAT_2_TIMES (two times)
                 - REPEAT_INF_TIMES ("forever")
     """
+    logger = logger
 
     REPEAT = 1
     REPEAT_2_TIMES = 2
@@ -155,12 +156,12 @@ class Repeater:
         -------
             bool
         """
-        # print("\t\tCOUNTER:", hex(id(self)), self._counter)
+        logger.warning("This part is patched manually to deactivate the repeater.")
         if self._counter == Repeater.INFINITE:
-            return True
+            return False
         elif self._counter > 0:
             self._counter -= 1
-            return True
+            return False
         else:
             return False
 
