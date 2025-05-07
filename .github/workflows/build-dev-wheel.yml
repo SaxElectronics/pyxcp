@@ -1,0 +1,58 @@
+name: Build Dev Wheel
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'Label (e.g. dev, debug, development)'
+        required: true
+        default: 'dev'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install build dependencies
+      run: pip install build
+
+    - name: Set dynamic version in pyproject.toml
+      shell: pwsh
+      run: |
+        $pyproject = Get-Content pyproject.toml
+        $newVersion = "0.22.28.${{ github.event.inputs.label }}"
+        $updated = $pyproject -replace 'version = ".*"', "version = `"$newVersion`""
+        $updated | Set-Content pyproject.toml
+        echo "PACKAGE_VERSION=$newVersion" >> $env:GITHUB_ENV
+
+    - name: Build wheel
+      run: python -m build --wheel
+
+    - name: Get built wheel name
+      shell: pwsh
+      run: |
+        $wheel = Get-ChildItem -Path dist/*.whl | Select-Object -First 1
+        echo "RELEASE_WHEEL_NAME=$($wheel.Name)" >> $env:GITHUB_ENV
+
+    - name: Upload wheel artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: pyxcp-${{ github.event.inputs.label }}-wheel
+        path: dist/${{ env.RELEASE_WHEEL_NAME }}
+
+    - name: Update GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: dev
+        files: dist/${{ env.RELEASE_WHEEL_NAME }}
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
