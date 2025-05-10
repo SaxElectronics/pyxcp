@@ -1,6 +1,9 @@
 name: Build Dev Wheel
 
 on:
+  push:
+    branches:
+    - master  # Trigger when YOUR fork's master branch is updated
   workflow_dispatch:
     inputs:
       label:
