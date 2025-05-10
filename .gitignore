@@ -131,3 +131,18 @@ result.xml
 /pyxcp/recorder/mio/
 /pyxcp/recorder/simde/
 /pyxcp/recorder/coro/
+
+# CMake build files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+
+# Executables
+asamkeydll.exe
+
+# Install manifests
+install_manifest.txt
