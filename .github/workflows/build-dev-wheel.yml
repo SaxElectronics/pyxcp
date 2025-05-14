@@ -31,7 +31,7 @@ jobs:
       shell: pwsh
       run: |
         $pyproject = Get-Content pyproject.toml
-        $newVersion = "0.22.28.${{ github.event.inputs.label }}"
+        $newVersion = "0.22.30.${{ github.event.inputs.label }}"
         $updated = $pyproject -replace 'version = ".*"', "version = `"$newVersion`""
         $updated | Set-Content pyproject.toml
         echo "PACKAGE_VERSION=$newVersion" >> $env:GITHUB_ENV
